@@ -8,17 +8,17 @@ from discord.ext import commands
 from typing import Optional
 
 # ========= 資料結構 =========
-sessions = {}   # user_id -> {start, end, project, notify_channel_id, task}
+sessions = {}   # user_id -> {start, end, object, notify_channel_id, task}
 SEATS = [chr(ord('A') + i) for i in range(9)]  # A~I
 seat_assign = {}
 LOG_FILE = "learning_log.json"
 
 # =========== 存檔 ===========
-def save_log(user_id: int, username: str, project: str, start: datetime, end: datetime, minutes: int):
+def save_log(user_id: int, username: str, object: str, start: datetime, end: datetime, minutes: int):
     record = {
         "user_id": user_id,
         "username": username,
-        "project": project,
+        "object": object,
         "start": start.isoformat(),
         "end": end.isoformat(),
         "minutes": minutes,
@@ -105,7 +105,7 @@ async def schedule_reminder(bot: commands.Bot, user_id: int):
         start = sess["start"]
         end = datetime.now()
         minutes = max(1, int((end - start).total_seconds() // 60))
-        project = sess["project"]
+        object = sess["object"]
 
         seat_assign.pop(user_id, None)
         sessions.pop(user_id, None)
@@ -114,19 +114,19 @@ async def schedule_reminder(bot: commands.Bot, user_id: int):
         ch = bot.get_channel(sess["notify_channel_id"])
         if ch:
             await ch.send(
-                f"⏰ {user.mention} 自習時間結束，實際學習{format_project(project)} {minutes} 分鐘。\n"
+                f"⏰ {user.mention} 自習時間結束，實際學習{format_object(object)} {minutes} 分鐘。\n\n"
                 f"🪑 目前座位表：\n```\n{seatmap_str}\n```"
             )
 
-        await user.send(f"⏰ 你的自習時間到囉！實際學習{format_project(project)} {minutes} 分鐘。")
+        await user.send(f"⏰ 你的自習時間到囉！實際學習{format_object(object)} {minutes} 分鐘。")
 
-        save_log(user_id, user.name if user else str(user_id), sess["project"], start, end, minutes)
+        save_log(user_id, user.name if user else str(user_id), sess["object"], start, end, minutes)
 
     sessions[user_id]["task"] = asyncio.create_task(_task())
 
 # =========== 格式化輸出 ===========
-def format_project(project: Optional[str]) -> str:
-    return f" **{project}**" if project else ""
+def format_object(object: Optional[str]) -> str:
+    return f" **{object}**" if object else ""
 
 # =========== 指令 ===========
 class Study(commands.Cog):
@@ -134,9 +134,13 @@ class Study(commands.Cog):
         self.bot = bot
     
     # =========== 開始計時學習時間 ===========
-    @app_commands.command(name="start_learning", description="開始自習")
-    @app_commands.describe(duration="學習時間（分鐘）", project="學習項目（選填）")
-    async def start_learning(self, interaction: discord.Interaction, duration: int, project: Optional[str] = None):
+    @app_commands.command(
+        name="start_learning", 
+        description="開始自習",
+        extras={"example": "/start_learning <time>60 [object]電腦視覺"}
+    )
+    @app_commands.describe(duration="學習時間（分鐘）（必填）", object="學習項目（選填）")
+    async def start_learning(self, interaction: discord.Interaction, duration: int, object: Optional[str] = None):
         if not interaction.user.voice:
             await interaction.response.send_message("❌ 你需要先進入語音頻道才能開始自習。", ephemeral=True)
             return
@@ -152,7 +156,7 @@ class Study(commands.Cog):
         sessions[interaction.user.id] = {
             "start": start,
             "end": end,
-            "project": project,
+            "object": object,
             "notify_channel_id": interaction.channel.id,
             "task": None,
         }
@@ -168,14 +172,18 @@ class Study(commands.Cog):
         seatmap_str = await render_seat_map(self.bot)
 
         await interaction.response.send_message(
-            f"📚 {interaction.user.mention} 開始學習{format_project(project)} {duration} 分鐘。\n"
+            f"📚 {interaction.user.mention} 開始學習{format_object(object)} {duration} 分鐘。\n"
             f"{seat_text}\n\n🪑 目前座位表：\n```\n{seatmap_str}\n```"
         )
         await schedule_reminder(self.bot, interaction.user.id)
     
     # =========== 延長學習時間 ===========
-    @app_commands.command(name="add_learning_time", description="延長自習時間")
-    @app_commands.describe(time="延長的分鐘數")
+    @app_commands.command(
+        name="add_learning_time", 
+        description="延長自習時間",
+        extras={"example": "/edit_information <time>10"}
+    )
+    @app_commands.describe(time="延長的分鐘數（必填）")
     async def add_learning_time(self, interaction: discord.Interaction, time: int):
         if interaction.user.id not in sessions:
             await interaction.response.send_message("⚠️ 你沒有正在進行的自習。", ephemeral=True)
@@ -185,15 +193,19 @@ class Study(commands.Cog):
         await schedule_reminder(self.bot, interaction.user.id)
     
     # =========== 編輯學習資訊 ===========
-    @app_commands.command(name="edit_information", description="編輯學習時間或項目")
-    @app_commands.describe(duration="學習時間（分鐘）", project="學習項目")
-    async def edit_information(self, interaction: discord.Interaction, duration: Optional[int] = None, project: Optional[str] = None):
+    @app_commands.command(
+        name="edit_information", 
+        description="編輯學習時間或項目",
+        extras={"example": "/edit_information [duration]10 [object]程式設計"}
+    )
+    @app_commands.describe(duration="學習時間（分鐘）（選填）", object="學習項目（選填）")
+    async def edit_information(self, interaction: discord.Interaction, duration: Optional[int] = None, object: Optional[str] = None):
         if interaction.user.id not in sessions:
             await interaction.response.send_message("⚠️ 你沒有正在進行的自習。", ephemeral=True)
             return
         
         sess = sessions[interaction.user.id]
-        old_project = sess["project"]
+        old_object = sess["object"]
         old_end = sess["end"]
     
         if duration is not None:
@@ -202,19 +214,23 @@ class Study(commands.Cog):
                 return
             sess["end"] = sess["start"] + timedelta(minutes=duration)
         
-        if project is not None:
-            sess["project"] = project
+        if object is not None:
+            sess["object"] = object
         
         await schedule_reminder(self.bot, interaction.user.id)
 
         minutes = max(1, int((sess['end'] - sess['start']).total_seconds() // 60))
         await interaction.response.send_message(
             f"✏️ {interaction.user.mention} 已更新自習資訊。\n"
-            f"📚 已改為學習{format_project(sess['project'])} {minutes} 分鐘。\n"
+            f"📚 已改為學習{format_object(sess['object'])} {minutes} 分鐘。\n"
         )
 
     # =========== 結束學習 ===========
-    @app_commands.command(name="finish_learning", description="結束自習並紀錄時數")
+    @app_commands.command(
+        name="finish_learning", 
+        description="結束自習並紀錄時數",
+        extras={"example": "/finish_learning"}
+    )
     async def finish_learning(self, interaction: discord.Interaction):
         sess = sessions.pop(interaction.user.id, None)
         if not sess:
@@ -228,14 +244,14 @@ class Study(commands.Cog):
         start = sess["start"]
         end = datetime.now()
         minutes = max(1, int((end - start).total_seconds() // 60))
-        project = sess["project"]
+        object = sess["object"]
         seat_assign.pop(interaction.user.id, None)
         user = interaction.user
-        save_log(user.id, user.name, project, start, end, minutes)
+        save_log(user.id, user.name, object, start, end, minutes)
 
         seatmap_str = await render_seat_map(self.bot)
         await interaction.response.send_message(
-            f"⏰ {user.mention} 結束自習，實際學習{format_project(project)} {minutes} 分鐘。\n"
+            f"🚶 {user.mention} 結束自習，實際學習{format_object(object)} {minutes} 分鐘。\n"
             f"🪑 目前座位表：\n```\n{seatmap_str}\n```"
         )
     
@@ -260,10 +276,10 @@ class Study(commands.Cog):
             start = sess["start"]
             end = datetime.now()
             minutes = max(1, int((end - start).total_seconds() // 60))
-            project = sess["project"]
+            object = sess["object"]
 
             seat_assign.pop(member.id, None)
-            save_log(member.id, member.name, project, start, end, minutes)
+            save_log(member.id, member.name, object, start, end, minutes)
 
             seatmap_str = await render_seat_map(self.bot)
 
@@ -271,26 +287,34 @@ class Study(commands.Cog):
             ch = self.bot.get_channel(sess["notify_channel_id"])
             if ch:
                 await ch.send(
-                    f"🚶 {member.mention} 已離開語音，自動結束自習，實際學習{format_project(project)} {minutes} 分鐘。\n"
+                    f"🚶 {member.mention} 已離開語音，自動結束自習，實際學習{format_object(object)} {minutes} 分鐘。\n"
                     f"🪑 目前座位表：\n```\n{seatmap_str}\n```"
                 )
 
     # =========== 查看座位表 ===========
-    @app_commands.command(name="seatmap", description="查看目前座位表")
-    async def seatmap(self, interaction: discord.Interaction):
+    @app_commands.command(
+        name="show_seatmap", 
+        description="查看目前座位表",
+        extras={"example": "/show_seatmap"}
+    )
+    async def show_seatmap(self, interaction: discord.Interaction):
         seatmap_str = await render_seat_map(self.bot)
-        await interaction.response.send_message(f"目前座位表：\n```\n{seatmap_str}\n```", ephemeral=True)
+        await interaction.response.send_message(f"🪑 目前座位表：\n```\n{seatmap_str}\n```", ephemeral=True)
     
     # =========== 查看狀態、剩餘學習時間 ===========
-    @app_commands.command(name="status", description="查看剩餘時間")
-    async def status(self, interaction: discord.Interaction):
+    @app_commands.command(
+        name="check_status", 
+        description="查看剩餘時間",
+        extras={"example": "/check_status"}
+    )
+    async def check_status(self, interaction: discord.Interaction):
         sess = sessions.get(interaction.user.id)
         if not sess:
             await interaction.response.send_message("你沒有在自習喔。", ephemeral=True)
             return
         remain = int((sess["end"] - datetime.now()).total_seconds() // 60)
         await interaction.response.send_message(
-            f"⏳ 項目：**{sess['project']}**，剩餘 {max(0, remain)} 分鐘。",
+            f"⏳ 項目：**{sess['object']}**，剩餘 {max(0, remain)} 分鐘。",
             ephemeral=True
         )
 
